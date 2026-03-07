@@ -256,8 +256,8 @@ export function getDashboardHtml(token: string, chatId: string): string {
 </div>
 
 <script>
-const TOKEN = \${JSON.stringify(token)};
-const CHAT_ID = \${JSON.stringify(chatId)};
+const TOKEN = ${JSON.stringify(token)};
+const CHAT_ID = ${JSON.stringify(chatId)};
 const BASE = location.origin;
 
 // Device detection
