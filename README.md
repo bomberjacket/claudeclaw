@@ -1026,9 +1026,14 @@ cp -r skills/google-calendar ~/.claude/skills/google-calendar
 
 # Slack — list conversations, read messages, send replies
 cp -r skills/slack ~/.claude/skills/slack
+
+# Outlook Calendar — view meetings, check availability (read-only)
+cp -r skills/outlook-calendar ~/.claude/skills/outlook-calendar
 ```
 
 **Gmail + Calendar require Google OAuth credentials.** See `.env.example` for the variables and each skill's `SKILL.md` for one-time setup instructions (create a Google Cloud project, enable the API, download credentials, run auth once).
+
+**Outlook Calendar requires an Azure app registration.** See the [Outlook Calendar setup guide](docs/outlook-calendar-setup.md) for step-by-step instructions. No Azure AD admin access needed in most tenants.
 
 **Slack requires a User OAuth Token.** See the [Slack setup section](#slack-optional) above for step-by-step instructions.
 
@@ -1062,6 +1067,8 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 | `GOOGLE_CREDS_PATH` | No | Path to Google OAuth credentials.json (default: `~/.config/gmail/credentials.json`) |
 | `GMAIL_TOKEN_PATH` | No | Path to Gmail OAuth token (default: `~/.config/gmail/token.json`) |
 | `GCAL_TOKEN_PATH` | No | Path to Calendar OAuth token (default: `~/.config/calendar/token.json`) |
+| `OUTLOOK_CLIENT_ID` | No | Azure app registration Client ID (for Outlook Calendar) |
+| `OUTLOOK_TENANT_ID` | No | Azure AD Tenant ID (for Outlook Calendar) |
 | `DASHBOARD_TOKEN` | No | 48-char hex token for dashboard access |
 | `DASHBOARD_PORT` | No | Dashboard port (default: `3141`) |
 | `DASHBOARD_URL` | No | Public URL if using Cloudflare Tunnel |
