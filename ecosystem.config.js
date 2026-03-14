@@ -39,5 +39,13 @@ module.exports = {
       restart_delay: 5000,
       max_restarts: 10,
     },
+    {
+      name: 'claudeclaw-cto',
+      script: 'dist/index.js',
+      args: '--agent cto',
+      cwd: __dirname,
+      restart_delay: 5000,
+      max_restarts: 10,
+    },
   ],
 };

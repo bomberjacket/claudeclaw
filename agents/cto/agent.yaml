@@ -1,0 +1,13 @@
+name: CTO
+description: Chief Technology Officer -- codebase architecture, dashboard, infrastructure, builds, dev tooling, and technical debt
+telegram_bot_token_env: CTO_BOT_TOKEN
+model: claude-opus-4-6
+
+skills:
+  - frontend-design
+  - mcp-builder
+  - skill-creator
+  - xlsx
+  - pdf
+  - pptx
+  - doc-coauthoring
