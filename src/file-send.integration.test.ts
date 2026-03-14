@@ -52,10 +52,11 @@ function loadEnv(): { token: string; chatId: string } {
 
 // ── Unit tests: extractFileMarkers → mocked Grammy context ─────────
 describe('file sending: mocked Grammy context', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mockCtx: {
-    reply: ReturnType<typeof vi.fn>;
-    replyWithDocument: ReturnType<typeof vi.fn>;
-    replyWithPhoto: ReturnType<typeof vi.fn>;
+    reply: any;
+    replyWithDocument: any;
+    replyWithPhoto: any;
     chat: { id: number };
   };
 
