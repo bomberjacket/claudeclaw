@@ -1,5 +1,9 @@
 #!/bin/bash
-# ClaudeClaw Agent Creator
+# ClaudeClaw Agent Creator (Legacy)
+# Superseded by /new-agent skill which provides a full interactive wizard
+# with CLAUDE.md customization, reference files, skill import, and more.
+#
+# This script is kept for quick scaffolding without the full interview.
 # Usage: npm run agent:create
 # Or:    bash scripts/agent-create.sh
 

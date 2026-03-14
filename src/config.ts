@@ -15,6 +15,9 @@ const envConfig = readEnvFile([
   'DASHBOARD_PORT',
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
+  'ANTHROPIC_API_KEY',
+  'LEARNING_ENABLED',
+  'SAFETY_ENABLED',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -93,3 +96,15 @@ export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
+
+// Utility model for self-learning pipeline (Sonnet 4.6)
+export const UTILITY_MODEL_API_KEY =
+  process.env.ANTHROPIC_API_KEY || envConfig.ANTHROPIC_API_KEY || '';
+
+// Self-learning pipeline (auto solution/fragment extraction + consolidation)
+export const LEARNING_ENABLED =
+  (process.env.LEARNING_ENABLED || envConfig.LEARNING_ENABLED || 'true').toLowerCase() !== 'false';
+
+// Safety layer (prompt injection defense, leak detection, policy enforcement)
+export const SAFETY_ENABLED =
+  (process.env.SAFETY_ENABLED || envConfig.SAFETY_ENABLED || 'true').toLowerCase() !== 'false';

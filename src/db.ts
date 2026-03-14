@@ -125,6 +125,25 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_hive_mind_agent ON hive_mind(agent_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_hive_mind_time ON hive_mind(created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id                   TEXT PRIMARY KEY,
+      workflow_name        TEXT NOT NULL,
+      status               TEXT NOT NULL DEFAULT 'pending',
+      current_step         INTEGER NOT NULL DEFAULT 0,
+      total_steps          INTEGER NOT NULL,
+      step_results         TEXT,
+      is_graduated         INTEGER NOT NULL DEFAULT 0,
+      notification_cadence TEXT DEFAULT NULL,
+      triggered_by         TEXT,
+      error_message        TEXT,
+      started_at           INTEGER,
+      completed_at         INTEGER,
+      created_at           INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_name ON workflow_runs(workflow_name, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
       content=memories,
@@ -199,6 +218,45 @@ function runMigrations(database: Database.Database): void {
   if (!convoCols.some((c) => c.name === 'agent_id')) {
     database.exec(`ALTER TABLE conversation_log ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
   }
+
+  // Add source column to memories (tracks auto_solution, auto_fragment, etc.)
+  const memCols = database.prepare(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>;
+  if (!memCols.some((c) => c.name === 'source')) {
+    database.exec(`ALTER TABLE memories ADD COLUMN source TEXT DEFAULT NULL`);
+  }
+
+  // Multi-agent collaboration: add target_agent + status to hive_mind
+  const hiveCols = database.prepare(`PRAGMA table_info(hive_mind)`).all() as Array<{ name: string }>;
+  if (!hiveCols.some((c) => c.name === 'target_agent')) {
+    database.exec(`ALTER TABLE hive_mind ADD COLUMN target_agent TEXT DEFAULT NULL`);
+  }
+  if (!hiveCols.some((c) => c.name === 'status')) {
+    database.exec(`ALTER TABLE hive_mind ADD COLUMN status TEXT NOT NULL DEFAULT 'logged'`);
+  }
+
+  // Workflow runs table (for orchestrator agent)
+  const tables = database.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='workflow_runs'`).all();
+  if (tables.length === 0) {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS workflow_runs (
+        id                   TEXT PRIMARY KEY,
+        workflow_name        TEXT NOT NULL,
+        status               TEXT NOT NULL DEFAULT 'pending',
+        current_step         INTEGER NOT NULL DEFAULT 0,
+        total_steps          INTEGER NOT NULL,
+        step_results         TEXT,
+        is_graduated         INTEGER NOT NULL DEFAULT 0,
+        notification_cadence TEXT DEFAULT NULL,
+        triggered_by         TEXT,
+        error_message        TEXT,
+        started_at           INTEGER,
+        completed_at         INTEGER,
+        created_at           INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_workflow_runs_name ON workflow_runs(workflow_name, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+    `);
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -237,6 +295,7 @@ export interface Memory {
   salience: number;
   created_at: number;
   accessed_at: number;
+  source: string | null;
 }
 
 export function saveMemory(
@@ -244,12 +303,14 @@ export function saveMemory(
   content: string,
   sector = 'semantic',
   topicKey?: string,
+  salience?: number,
+  source?: string,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO memories (chat_id, content, sector, topic_key, created_at, accessed_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(chatId, content, sector, topicKey ?? null, now, now);
+    `INSERT INTO memories (chat_id, content, sector, topic_key, salience, source, created_at, accessed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(chatId, content, sector, topicKey ?? null, salience ?? 1.0, source ?? null, now, now);
 }
 
 export function searchMemories(
@@ -301,6 +362,58 @@ export function decayMemories(): void {
     'UPDATE memories SET salience = salience * 0.98 WHERE created_at < ?',
   ).run(oneDayAgo);
   db.prepare('DELETE FROM memories WHERE salience < 0.1').run();
+}
+
+export function deleteMemory(id: number): void {
+  db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+}
+
+export function updateMemoryContent(id: number, newContent: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    'UPDATE memories SET content = ?, accessed_at = ? WHERE id = ?',
+  ).run(newContent, now, id);
+}
+
+export function searchMemoriesBySector(
+  chatId: string,
+  query: string,
+  sector: string,
+  limit = 5,
+): Memory[] {
+  const sanitized = query
+    .replace(/[""]/g, '"')
+    .replace(/[^\w\s]/g, '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => `"${w}"*`)
+    .join(' ');
+
+  if (!sanitized) return [];
+
+  return db
+    .prepare(
+      `SELECT memories.* FROM memories
+       JOIN memories_fts ON memories.id = memories_fts.rowid
+       WHERE memories_fts MATCH ? AND memories.chat_id = ? AND memories.sector = ?
+       ORDER BY rank
+       LIMIT ?`,
+    )
+    .all(sanitized, chatId, sector, limit) as Memory[];
+}
+
+export function getConversationWindow(
+  chatId: string,
+  limit = 6,
+): ConversationTurn[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM conversation_log WHERE chat_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(chatId, limit) as ConversationTurn[];
+  return rows.reverse(); // chronological order
 }
 
 // ── Scheduled Tasks ──────────────────────────────────────────────────
@@ -613,6 +726,8 @@ export interface DashboardMemoryStats {
   total: number;
   semantic: number;
   episodic: number;
+  solution: number;
+  fragment: number;
   avgSalience: number;
   salienceDistribution: { bucket: string; count: number }[];
 }
@@ -624,10 +739,12 @@ export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
          COUNT(*) as total,
          SUM(CASE WHEN sector = 'semantic' THEN 1 ELSE 0 END) as semantic,
          SUM(CASE WHEN sector = 'episodic' THEN 1 ELSE 0 END) as episodic,
+         SUM(CASE WHEN sector = 'solution' THEN 1 ELSE 0 END) as solution,
+         SUM(CASE WHEN sector = 'fragment' THEN 1 ELSE 0 END) as fragment,
          AVG(salience) as avgSalience
        FROM memories WHERE chat_id = ?`,
     )
-    .get(chatId) as { total: number; semantic: number; episodic: number; avgSalience: number | null };
+    .get(chatId) as { total: number; semantic: number; episodic: number; solution: number; fragment: number; avgSalience: number | null };
 
   const buckets = db
     .prepare(
@@ -651,6 +768,8 @@ export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
     total: counts.total,
     semantic: counts.semantic,
     episodic: counts.episodic,
+    solution: counts.solution,
+    fragment: counts.fragment,
     avgSalience: counts.avgSalience ?? 0,
     salienceDistribution: buckets,
   };
@@ -782,6 +901,8 @@ export interface HiveMindEntry {
   action: string;
   summary: string;
   artifacts: string | null;
+  target_agent: string | null;
+  status: string;
   created_at: number;
 }
 
@@ -808,6 +929,46 @@ export function getHiveMindEntries(limit = 20, agentId?: string): HiveMindEntry[
   return db
     .prepare('SELECT * FROM hive_mind ORDER BY created_at DESC LIMIT ?')
     .all(limit) as HiveMindEntry[];
+}
+
+/** Get recent hive_mind entries from OTHER agents (for team awareness). */
+export function getTeamActivity(excludeAgentId: string, limit = 10): HiveMindEntry[] {
+  return db
+    .prepare(
+      `SELECT * FROM hive_mind WHERE agent_id != ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(excludeAgentId, limit) as HiveMindEntry[];
+}
+
+/** Get pending handoffs targeted at a specific agent. */
+export function getPendingHandoffs(targetAgent: string): HiveMindEntry[] {
+  return db
+    .prepare(
+      `SELECT * FROM hive_mind WHERE target_agent = ? AND status = 'pending'
+       ORDER BY created_at ASC`,
+    )
+    .all(targetAgent) as HiveMindEntry[];
+}
+
+/** Mark a handoff as accepted/completed. */
+export function updateHandoffStatus(id: number, status: string): void {
+  db.prepare('UPDATE hive_mind SET status = ? WHERE id = ?').run(status, id);
+}
+
+/** Log a handoff to another agent. */
+export function logHandoff(
+  fromAgent: string,
+  chatId: string,
+  targetAgent: string,
+  summary: string,
+  artifacts?: string,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO hive_mind (agent_id, chat_id, action, summary, artifacts, target_agent, status, created_at)
+     VALUES (?, ?, 'handoff', ?, ?, ?, 'pending', ?)`,
+  ).run(fromAgent, chatId, summary, artifacts ?? null, targetAgent, now);
 }
 
 export function getAgentTokenStats(agentId: string): { todayCost: number; todayTurns: number; allTimeCost: number } {
@@ -881,4 +1042,104 @@ export function getSessionTokenUsage(sessionId: string): SessionTokenSummary | n
     firstTurnAt: row.firstTurnAt,
     lastTurnAt: row.lastTurnAt,
   };
+}
+
+// ── Workflow Runs (Orchestrator) ──────────────────────────────────────
+
+export interface WorkflowRun {
+  id: string;
+  workflow_name: string;
+  status: string;
+  current_step: number;
+  total_steps: number;
+  step_results: string | null;
+  is_graduated: number;
+  notification_cadence: string | null;
+  triggered_by: string | null;
+  error_message: string | null;
+  started_at: number | null;
+  completed_at: number | null;
+  created_at: number;
+}
+
+export function createWorkflowRun(
+  id: string,
+  workflowName: string,
+  totalSteps: number,
+  triggeredBy?: string,
+  isGraduated = false,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO workflow_runs (id, workflow_name, status, current_step, total_steps, is_graduated, triggered_by, started_at, created_at)
+     VALUES (?, ?, 'running', 0, ?, ?, ?, ?, ?)`,
+  ).run(id, workflowName, totalSteps, isGraduated ? 1 : 0, triggeredBy ?? null, now, now);
+}
+
+export function getWorkflowRun(id: string): WorkflowRun | undefined {
+  return db.prepare('SELECT * FROM workflow_runs WHERE id = ?').get(id) as WorkflowRun | undefined;
+}
+
+export function updateWorkflowStep(
+  id: string,
+  step: number,
+  status: string,
+  stepResults?: string,
+): void {
+  db.prepare(
+    `UPDATE workflow_runs SET current_step = ?, status = ?, step_results = ? WHERE id = ?`,
+  ).run(step, status, stepResults ?? null, id);
+}
+
+export function completeWorkflowRun(id: string, stepResults?: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE workflow_runs SET status = 'completed', step_results = ?, completed_at = ? WHERE id = ?`,
+  ).run(stepResults ?? null, now, id);
+}
+
+export function failWorkflowRun(id: string, errorMessage: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE workflow_runs SET status = 'failed', error_message = ?, completed_at = ? WHERE id = ?`,
+  ).run(errorMessage, now, id);
+}
+
+export function isWorkflowGraduated(workflowName: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT id FROM workflow_runs WHERE workflow_name = ? AND status = 'completed' AND is_graduated = 0 LIMIT 1`,
+    )
+    .get(workflowName) as { id: string } | undefined;
+  return !!row;
+}
+
+export function setNotificationCadence(workflowName: string, cadence: string): void {
+  db.prepare(
+    `UPDATE workflow_runs SET notification_cadence = ? WHERE workflow_name = ?`,
+  ).run(cadence, workflowName);
+}
+
+export function getNotificationCadence(workflowName: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT notification_cadence FROM workflow_runs WHERE workflow_name = ? AND notification_cadence IS NOT NULL ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(workflowName) as { notification_cadence: string | null } | undefined;
+  return row?.notification_cadence ?? null;
+}
+
+export function getActiveWorkflowRuns(): WorkflowRun[] {
+  return db
+    .prepare(
+      `SELECT * FROM workflow_runs WHERE status IN ('running', 'paused_for_approval', 'pending')
+       ORDER BY created_at DESC`,
+    )
+    .all() as WorkflowRun[];
+}
+
+export function getRecentWorkflowRuns(limit = 20): WorkflowRun[] {
+  return db
+    .prepare('SELECT * FROM workflow_runs ORDER BY created_at DESC LIMIT ?')
+    .all(limit) as WorkflowRun[];
 }

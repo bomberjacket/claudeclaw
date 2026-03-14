@@ -8,7 +8,7 @@
 #   npm start -- --agent myagent
 
 name: My Agent
-description: What this agent does
+description: What this agent does (be specific -- this is used for team awareness)
 
 # The env var name in .env that holds this agent's Telegram bot token.
 # Create a bot via @BotFather in Telegram, paste the token into .env.
@@ -17,6 +17,26 @@ telegram_bot_token_env: MYAGENT_BOT_TOKEN
 # Default model. Options: claude-opus-4-6, claude-sonnet-4-6, claude-haiku-4-5
 # Users can override per-chat with /model in Telegram.
 model: claude-sonnet-4-6
+
+# Skills this agent should focus on (from ~/.claude/skills/).
+# Omit to allow all skills. List specific ones to focus the agent.
+# skills:
+#   - outlook
+#   - outlook-calendar
+#   - agent-browser
+
+# Reference files (in references/ directory).
+# Domain knowledge and workflow configs that the agent lazy-loads on demand.
+# See references/README.md for the structure.
+#
+# Types of reference files:
+#   - Domain knowledge (.md)  -- frameworks, procedures, expertise
+#   - Workflow configs (.json) -- multi-step processes with validation
+#   - Anti-patterns (.md)     -- common mistakes to avoid
+#
+# The agent's CLAUDE.md maps task types to reference files.
+# No config needed here -- just put files in references/ and document
+# the mapping in CLAUDE.md.
 
 # Obsidian integration (optional).
 # Assign folders from your vault so this agent auto-loads relevant context.

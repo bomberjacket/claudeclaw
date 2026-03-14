@@ -1029,11 +1029,14 @@ cp -r skills/slack ~/.claude/skills/slack
 
 # Outlook Calendar — view meetings, check availability (read-only)
 cp -r skills/outlook-calendar ~/.claude/skills/outlook-calendar
+
+# Outlook Mail — read inbox, search emails (read-only)
+cp -r skills/outlook-mail ~/.claude/skills/outlook-mail
 ```
 
 **Gmail + Calendar require Google OAuth credentials.** See `.env.example` for the variables and each skill's `SKILL.md` for one-time setup instructions (create a Google Cloud project, enable the API, download credentials, run auth once).
 
-**Outlook Calendar requires an Azure app registration.** See the [Outlook Calendar setup guide](docs/outlook-calendar-setup.md) for step-by-step instructions. No Azure AD admin access needed in most tenants.
+**Outlook Calendar + Mail require an Azure app registration.** See the [Outlook setup guide](docs/outlook-setup.md) for step-by-step instructions. Both skills share one app -- Calendar uses `Calendars.Read`, Mail adds `Mail.Read`. No Azure AD admin access needed in most tenants.
 
 **Slack requires a User OAuth Token.** See the [Slack setup section](#slack-optional) above for step-by-step instructions.
 
@@ -1073,6 +1076,7 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 | `DASHBOARD_PORT` | No | Dashboard port (default: `3141`) |
 | `DASHBOARD_URL` | No | Public URL if using Cloudflare Tunnel |
 | `CLAUDE_CODE_OAUTH_TOKEN` | No | Override which Claude account is used |
+| `SAFETY_ENABLED` | No | Safety layer on/off (default: `true`) |
 
 ---
 
@@ -1121,6 +1125,60 @@ ClaudeClaw is designed to run on your personal machine for your own use. A few t
 **`notify.sh` is called by Claude.** The notification script sends Telegram messages via `curl`. Since Claude has full shell access, it can call this script with any content. This is by design (it's how progress updates work), but be aware that prompt injection via external content (web pages, files) could theoretically cause Claude to send unexpected messages.
 
 **Set `ALLOWED_CHAT_ID` immediately.** Until this is set, the bot responds to any Telegram user who messages it. The setup wizard helps you configure this, but if you start the bot manually before setting it, it's open to everyone who knows the bot username.
+
+### Safety layer (ported from IronClaw)
+
+ClaudeClaw includes a pre/post processing safety layer ported from [IronClaw](../ironclaw) (Rust). It runs at three gates around the Claude Code SDK subprocess -- no latency impact (regex-only, no LLM calls).
+
+**Architecture:**
+
+```
+User message → [INBOUND GATE] → buildMemoryContext() → [MEMORY GATE] → Claude SDK → [OUTBOUND GATE] → Telegram
+```
+
+**What it catches:**
+
+| Layer | What | Examples |
+|-------|------|---------|
+| **Input validation** | Length limits, null bytes, whitespace padding attacks, excessive character repetition | 100KB max, `\x00` blocked, >90% whitespace warned, >20 repeated chars warned |
+| **Injection detection** | 18 exact-match patterns + 4 regex patterns for prompt injection attempts | "ignore previous instructions", "you are now", fake `[system]` tags, base64 payloads, `eval()` calls |
+| **Policy enforcement** | 7 rules covering dangerous patterns -- `block` strips the content, `warn` tags it | Shell injection (`;rm -rf`), encoded exploits (`%00`), XXE, SSTI, SQL injection, path traversal |
+| **Leak detection** | 16 secret patterns scanned on outbound responses, redacted before reaching Telegram | AWS keys, GitHub tokens, JWTs, Anthropic/OpenAI keys, PEM private keys, Telegram bot tokens, passwords |
+| **Memory sanitization** | Injection detection on recalled memories before they enter Claude's context | Prevents poisoned memories from carrying injection payloads across sessions |
+| **External content wrapping** | Security fence around untrusted content with a notice telling Claude not to follow embedded instructions | Emails, web scrapes, any external data source |
+
+**Patterns ported from IronClaw:**
+
+| IronClaw module | ClaudeClaw equivalent | Status |
+|----------------|----------------------|--------|
+| `leak_detector.rs` — 16 secret patterns | `scanForLeaks()`, `redactLeaks()` | Ported |
+| `sanitizer.rs` — injection detection | `detectInjection()` — 18 exact + 4 regex | Ported |
+| `policy.rs` — policy rules | `checkPolicy()` — 7 rules (block/warn) | Ported |
+| `validator.rs` — input validation | `validateInput()` — length, null bytes, whitespace, repetition | Ported |
+| `mod.rs` — external content wrapping | `wrapExternalContent()` | Ported |
+| `secrets/` — encrypted credential storage | N/A — ClaudeClaw uses `.env`, SDK handles its own tools | Not applicable |
+| `sandbox/` — Docker execution sandbox | N/A — Claude Code SDK has its own sandbox | Not applicable |
+| `credential_detect.rs` — HTTP request credential detection | N/A — browser skill runs inside SDK subprocess | Not applicable |
+
+**Configuration:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SAFETY_ENABLED` | `true` | Set to `false` in `.env` to bypass the entire safety layer |
+
+**How warnings vs. errors work:**
+
+The safety layer never silently drops a Telegram message -- blocking a message outright would be confusing since you'd send something and get no response. Instead, everything flows through `sanitizeInbound()` as a pipeline:
+
+- **Validation warnings** (whitespace padding, excessive repetition) are logged but the message passes through unchanged. These flag suspicious patterns without disrupting normal use.
+- **Validation errors** (empty input, exceeds 100KB, null bytes) are also logged as warnings rather than hard-blocked. The message still reaches Claude, but the log entry gives visibility into malformed input.
+- **Injection detection** prepends a `[SAFETY WARNING]` tag to the message telling Claude not to follow embedded instructions. The original content is preserved so Claude can still describe what it found.
+- **Policy rules** with `block` action replace the violating segment with `[BLOCKED:rule_name]`. Policy rules with `warn` action prepend a warning tag like injection detection.
+- **Outbound leak redaction** is the only hard replacement -- secrets are swapped with `[REDACTED:name]` before reaching Telegram. This is the one place where content is actually removed, because leaking a real API key is worse than any false positive.
+
+The result: you always get a response, suspicious content gets tagged/logged for visibility, and secrets never leak out to Telegram.
+
+All safety events are logged via pino at `warn` level. Check logs for `Safety:` prefixed messages to see what was caught.
 
 ---
 
@@ -1260,6 +1318,7 @@ claudeclaw/
 │   ├── scheduler.ts      Cron task runner — fires tasks every 60 seconds
 │   ├── voice.ts          Voice transcription (Groq) and synthesis (ElevenLabs)
 │   ├── media.ts          Downloads files from Telegram, cleans up after 24h
+│   ├── safety.ts         Safety layer — injection detection, leak redaction, policy enforcement
 │   ├── slack.ts           Slack API client (conversations, messages, send)
 │   ├── slack-cli.ts       CLI wrapper for Slack (used by the slack skill)
 │   ├── whatsapp.ts        WhatsApp client via whatsapp-web.js

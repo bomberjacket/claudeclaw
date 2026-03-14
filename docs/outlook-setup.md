@@ -1,8 +1,12 @@
-# Outlook Calendar Skill for ClaudeClaw
+# Outlook Skills for ClaudeClaw
 
-> Read-only Microsoft 365 calendar access from Telegram, built without Azure AD admin access.
+> Read-only Microsoft 365 calendar and email access from Telegram, using a single Azure app registration.
 
-This documents what was built, why, how it works under the hood, and how to set it up yourself.
+This documents what was built, why, how it works under the hood, and how to set it up yourself. Both skills share the same app registration, Client ID, and Tenant ID.
+
+---
+
+# Part 1: Outlook Calendar
 
 ---
 
@@ -48,7 +52,7 @@ allowed-tools: Bash(CLAUDECLAW_DIR=* python ~/.config/calendar/outlook_cal.py *)
 
 The rest of the file documents the commands, datetime formats, and usage patterns so Claude knows how to invoke the script when someone asks about their calendar.
 
-**3. Setup guide** -- this file (`docs/outlook-calendar-setup.md`)
+**3. Setup guide** -- this file (`docs/outlook-setup.md`)
 
 ### Files modified
 
@@ -266,3 +270,218 @@ CLAUDECLAW_DIR=/path/to/claudeclaw python ~/.config/calendar/outlook_cal.py list
 - **Tokens stored locally**: `~/.config/calendar/outlook_token_cache.json` -- not in the repo.
 - **User-scoped**: Only accesses the authenticated user's calendar. No org-wide access.
 - `.env` with Client/Tenant IDs should not be committed (it's in `.gitignore`).
+
+---
+
+# Part 2: Outlook Mail
+
+> Read-only Microsoft 365 email access. Same Azure app, separate token cache, separate scope.
+
+Added March 9, 2026.
+
+---
+
+## The problem
+
+ClaudeClaw had a Gmail skill for email but no way to read your Microsoft 365 / Outlook inbox. If your work email is on M365, you need this.
+
+## The solution
+
+A read-only Outlook Mail skill that:
+- Reuses the **same Azure app registration** as the Calendar skill (same Client ID + Tenant ID)
+- Only requests `Mail.Read` (delegated) -- physically cannot send, reply, forward, move, or delete
+- Uses a **separate token cache** (`~/.config/mail/outlook_token_cache.json`) because the scope is different
+- Same architecture: Python CLI, JSON output, device-code flow
+
+---
+
+## What was built
+
+### Files created
+
+**1. Python CLI script** -- `~/.config/mail/outlook_mail.py`
+
+A ~280-line Python script with four commands:
+
+| Command | Graph API endpoint | What it does |
+|---------|-------------------|-------------|
+| `auth` | Device code flow | One-time sign-in via browser (consents to `Mail.Read`) |
+| `list [--hours N] [--all] [--folder NAME]` | `/me/mailFolders/{folder}/messages` | Inbox messages (default: last 48h) |
+| `read <message_id>` | `/me/messages/{id}` | Full message body, headers, attachment list |
+| `search --query "keyword" [--from "sender"] [--subject "text"]` | `/me/messages?$search=...` | Search via Graph API KQL syntax |
+
+All output is JSON. Errors are also JSON (`{"error": "message"}`).
+
+**2. Skill definition** -- `skills/outlook-mail/SKILL.md`
+
+```yaml
+allowed-tools: Bash(CLAUDECLAW_DIR=* python ~/.config/mail/outlook_mail.py *)
+```
+
+**3. This setup guide** -- appended to the existing calendar doc.
+
+### Files modified
+
+**4. `CLAUDE.md`** -- Changed the `outlook` skill trigger to "Outlook email, inbox, read email (read-only)".
+
+**5. `README.md`** -- Added Outlook Mail to the bundled skills install section.
+
+---
+
+## Architecture decisions
+
+### Why a separate token cache?
+
+MSAL caches tokens per scope. The calendar skill authenticates with `Calendars.Read` and the mail skill with `Mail.Read`. Using the same cache file would work but could cause confusion during token refresh. Separate caches keep things clean:
+
+- Calendar: `~/.config/calendar/outlook_token_cache.json`
+- Mail: `~/.config/mail/outlook_token_cache.json`
+
+### Why `~/.config/mail/` for the script?
+
+Mirrors the calendar pattern (`~/.config/calendar/`). Groups mail tools together, keeps tokens out of the repo.
+
+### Why not pre-register Mail.Read in the app manifest?
+
+We tried. In some tenants the Entra portal "Add a permission" button is grayed out for app owners who aren't Global Admins. MSAL's device-code flow supports **dynamic consent** -- it requests the scope at auth time and the user consents in the browser. No manifest change needed. The admin may need to approve the consent request depending on tenant policy.
+
+---
+
+## How it works under the hood
+
+```
+User (Telegram)
+  |
+  v
+ClaudeClaw (Claude Code session)
+  |
+  v
+Bash: CLAUDECLAW_DIR=... python ~/.config/mail/outlook_mail.py list
+  |
+  +--> Reads .env for OUTLOOK_CLIENT_ID + OUTLOOK_TENANT_ID
+  +--> Loads token cache from ~/.config/mail/outlook_token_cache.json
+  +--> MSAL acquires token silently (refresh if needed)
+  +--> GET https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?...
+  +--> Normalizes response to clean JSON
+  |
+  v
+JSON array of messages --> Claude formats for Telegram
+```
+
+### Message normalization
+
+Graph API returns deeply nested objects. The script normalizes them:
+
+```json
+{
+  "id": "AAMk...",
+  "subject": "Q1 Report",
+  "from_name": "John Smith",
+  "from_email": "john@example.com",
+  "received": "2026-03-09T14:30:00Z",
+  "is_read": true,
+  "has_attachments": false,
+  "importance": "normal",
+  "preview": "First 200 chars of the email body...",
+  "to": [{"name": "Mike", "email": "mike@company.com"}]
+}
+```
+
+Full message view (`read`) adds: `body`, `body_type`, `cc`, `attachments` (metadata only), `reply_to`, `conversation_id`.
+
+### Search
+
+Uses Graph API's `$search` parameter with KQL syntax:
+
+- `--query "CMMC"` becomes `$search="CMMC"`
+- `--from "john@example.com"` becomes `$search=from:"john@example.com"`
+- Combined: `$search="CMMC" AND from:"john@example.com"`
+
+### Folder support
+
+The `--folder` flag maps to Graph's well-known folder names:
+
+| Flag value | Graph folder |
+|-----------|-------------|
+| `inbox` (default) | Inbox |
+| `sentitems` | Sent Items |
+| `drafts` | Drafts |
+| `deleteditems` | Deleted Items |
+| `junkemail` | Junk Email |
+| `archive` | Archive |
+
+---
+
+## Setup
+
+### If you already have the Calendar skill working
+
+You already have the app registration, Client ID, Tenant ID, and dependencies. Just:
+
+**Step 1 -- Add `Mail.Read` permission**
+
+Option A: In Entra > App registrations > your app > API permissions > Add a permission > Microsoft Graph > Delegated > `Mail.Read`.
+
+Option B: If the button is grayed out, skip this step. Dynamic consent during device-code flow will handle it. Your tenant admin may need to approve the consent request.
+
+**Step 2 -- Place the script**
+
+```bash
+mkdir -p ~/.config/mail
+cp skills/outlook-mail/outlook_mail.py ~/.config/mail/outlook_mail.py
+```
+
+Or the script is already at `~/.config/mail/outlook_mail.py` if built from scratch.
+
+**Step 3 -- Authenticate**
+
+```bash
+CLAUDECLAW_DIR=/path/to/claudeclaw python ~/.config/mail/outlook_mail.py auth
+```
+
+You'll get a device-code prompt. Sign in and approve `Mail.Read`. If your tenant requires admin approval, your Global Admin will need to approve the consent request first.
+
+**Step 4 -- Install the skill**
+
+```bash
+cp -r skills/outlook-mail ~/.claude/skills/outlook-mail
+```
+
+**Step 5 -- Test**
+
+```bash
+# List recent inbox
+CLAUDECLAW_DIR=/path/to/claudeclaw python ~/.config/mail/outlook_mail.py list
+
+# Search
+CLAUDECLAW_DIR=/path/to/claudeclaw python ~/.config/mail/outlook_mail.py search --query "CMMC"
+
+# Telegram test
+# Send: "check my email"
+```
+
+### If you're starting from scratch
+
+Follow Part 1's setup (Steps 1-6) first to register the app and configure the calendar skill. Then come back here for the mail steps.
+
+---
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `OUTLOOK_CLIENT_ID and OUTLOOK_TENANT_ID must be set in .env` | Missing env vars | Add them to `.env`, make sure `CLAUDECLAW_DIR` is set |
+| `Not authenticated. Run: python outlook_mail.py auth` | No token cache or expired refresh token | Re-run `auth` |
+| `Approval required` during device-code flow | Tenant requires admin consent for `Mail.Read` | Ask Global Admin to approve the consent request in Entra > Enterprise apps > Admin consent requests |
+| `Add a permission` button grayed out in Entra | You're not a Global Admin and tenant restricts this | Skip it -- dynamic consent during auth handles it, but admin may need to approve |
+| `Graph API error 403` | Token doesn't have `Mail.Read` scope | Re-run `auth` to consent to the scope |
+
+---
+
+## Security
+
+- **Read-only by design**: Only `Mail.Read` (delegated). Cannot send, reply, forward, move, or delete.
+- **No client secret**: Public client flow. Nothing to leak.
+- **Tokens stored locally**: `~/.config/mail/outlook_token_cache.json` -- not in the repo.
+- **User-scoped**: Only accesses the authenticated user's mailbox. No org-wide access.
+- **Same app, separate caches**: Calendar and Mail use the same app registration but different token caches and scopes.

@@ -1,0 +1,63 @@
+{
+  "name": "example",
+  "description": "Example workflow template -- copy and modify for your own workflows",
+  "steps": [
+    {
+      "step": 1,
+      "name": "Research Phase",
+      "description": "Research the topic and compile findings",
+      "agent": "research",
+      "input": "Research [topic] and summarize key findings in 3-5 bullet points",
+      "output": "Bullet-point summary of findings",
+      "timeout_minutes": 5,
+      "validation": {
+        "rules": [
+          {
+            "check": "output_exists",
+            "operator": "==",
+            "value": true
+          }
+        ],
+        "on_failure": "stop"
+      }
+    },
+    {
+      "step": 2,
+      "name": "Draft Content",
+      "description": "Use the research to draft content",
+      "agent": "content",
+      "input": "Using the research findings from step 1, draft a [deliverable type]",
+      "output": "Draft content ready for review",
+      "timeout_minutes": 5,
+      "validation": {
+        "rules": [
+          {
+            "check": "output_exists",
+            "operator": "==",
+            "value": true
+          }
+        ],
+        "on_failure": "stop"
+      }
+    },
+    {
+      "step": 3,
+      "name": "Distribute",
+      "description": "Send the final content through the appropriate channel",
+      "agent": "comms",
+      "input": "Send the drafted content via [channel]",
+      "output": "Confirmation that content was sent",
+      "timeout_minutes": 3,
+      "validation": {
+        "rules": [
+          {
+            "check": "hive_mind_logged",
+            "operator": "==",
+            "value": true
+          }
+        ],
+        "on_failure": "stop"
+      }
+    }
+  ]
+}

@@ -5,6 +5,10 @@ telegram_bot_token_env: OPS_BOT_TOKEN
 
 model: claude-sonnet-4-6
 
+skills:
+  - outlook-calendar
+  - agent-browser
+
 obsidian:
   vault: /Users/marwankashef/Desktop/Prompt Advisers/Mark's World
   folders:

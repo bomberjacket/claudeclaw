@@ -1,0 +1,50 @@
+{
+  "name": "example-workflow",
+  "description": "Template for defining a multi-step workflow with validation",
+  "steps": [
+    {
+      "step": 1,
+      "name": "Gather inputs",
+      "description": "Collect and validate all required inputs before processing",
+      "input": "User-provided data or files",
+      "output": "Validated input set",
+      "validation": {
+        "rules": [
+          {"check": "inputs_complete", "operator": "==", "value": true}
+        ],
+        "on_failure": "stop"
+      }
+    },
+    {
+      "step": 2,
+      "name": "Process",
+      "description": "Core processing step -- transform inputs into outputs",
+      "input": "Validated input set from step 1",
+      "output": "Processed results",
+      "validation": {
+        "rules": [
+          {"check": "output_exists", "operator": "==", "value": true},
+          {"check": "error_rate_percent", "operator": "<", "value": 5}
+        ],
+        "on_failure": "pause"
+      }
+    },
+    {
+      "step": 3,
+      "name": "Deliver",
+      "description": "Format and deliver results to the user",
+      "input": "Processed results from step 2",
+      "output": "Final deliverable",
+      "validation": {
+        "rules": [
+          {"check": "delivered", "operator": "==", "value": true}
+        ],
+        "on_failure": "stop"
+      }
+    }
+  ],
+  "settings": {
+    "auto_continue_on_success": true,
+    "pause_between_steps": false
+  }
+}

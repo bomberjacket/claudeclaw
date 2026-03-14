@@ -25,6 +25,8 @@ import {
   getHiveMindEntries,
   getAgentTokenStats,
   getAgentRecentConversation,
+  getActiveWorkflowRuns,
+  getRecentWorkflowRuns,
 } from './db.js';
 import { listAgentIds, loadAgentConfig } from './agent-config.js';
 import { processMessageFromDashboard } from './bot.js';
@@ -245,6 +247,13 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const agentId = c.req.param('id');
     const stats = getAgentTokenStats(agentId);
     return c.json(stats);
+  });
+
+  // Workflow runs (orchestrator)
+  app.get('/api/workflows', (c) => {
+    const active = getActiveWorkflowRuns();
+    const recent = getRecentWorkflowRuns(20);
+    return c.json({ active, recent });
   });
 
   // Hive mind feed

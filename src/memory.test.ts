@@ -3,11 +3,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./db.js', () => ({
   searchMemories: vi.fn(),
   getRecentMemories: vi.fn(),
+  getConversationWindow: vi.fn(),
   touchMemory: vi.fn(),
   saveMemory: vi.fn(),
   decayMemories: vi.fn(),
   logConversationTurn: vi.fn(),
   pruneConversationLog: vi.fn(),
+  deleteMemory: vi.fn(),
+  updateMemoryContent: vi.fn(),
+  searchMemoriesBySector: vi.fn(),
+}));
+
+vi.mock('./gemini.js', () => ({
+  isGeminiAvailable: vi.fn(),
+  callGeminiJSON: vi.fn(),
+}));
+
+vi.mock('./learning.js', () => ({
+  runLearningPipeline: vi.fn().mockResolvedValue(undefined),
 }));
 
 import {
@@ -24,15 +37,22 @@ import {
   decayMemories,
 } from './db.js';
 
+import { isGeminiAvailable } from './gemini.js';
+import { runLearningPipeline } from './learning.js';
+
 const mockSearchMemories = vi.mocked(searchMemories);
 const mockGetRecentMemories = vi.mocked(getRecentMemories);
 const mockTouchMemory = vi.mocked(touchMemory);
 const mockSaveMemory = vi.mocked(saveMemory);
 const mockDecayMemories = vi.mocked(decayMemories);
+const mockIsGeminiAvailable = vi.mocked(isGeminiAvailable);
+const mockRunLearningPipeline = vi.mocked(runLearningPipeline);
 
 describe('buildMemoryContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: Gemini unavailable (basic recall path)
+    mockIsGeminiAvailable.mockReturnValue(false);
   });
 
   it('returns empty string when no memories found', async () => {
@@ -54,6 +74,7 @@ describe('buildMemoryContext', () => {
         salience: 1.0,
         created_at: 100,
         accessed_at: 100,
+        source: null,
       },
     ]);
     mockGetRecentMemories.mockReturnValue([]);
@@ -77,6 +98,7 @@ describe('buildMemoryContext', () => {
         salience: 1.0,
         created_at: 100,
         accessed_at: 200,
+        source: null,
       },
     ]);
 
@@ -95,6 +117,7 @@ describe('buildMemoryContext', () => {
       salience: 1.0,
       created_at: 100,
       accessed_at: 100,
+      source: null,
     };
 
     mockSearchMemories.mockReturnValue([sharedMemory]);
@@ -117,6 +140,7 @@ describe('buildMemoryContext', () => {
         salience: 1.0,
         created_at: 100,
         accessed_at: 100,
+        source: null,
       },
     ]);
     mockGetRecentMemories.mockReturnValue([
@@ -129,6 +153,7 @@ describe('buildMemoryContext', () => {
         salience: 1.0,
         created_at: 100,
         accessed_at: 200,
+        source: null,
       },
     ]);
 
@@ -158,10 +183,17 @@ describe('buildMemoryContext', () => {
 describe('saveConversationTurn', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsGeminiAvailable.mockReturnValue(false);
   });
 
-  it('saves semantic memory for messages containing "I prefer"', () => {
+  it('fires learning pipeline and saves semantic memory when Gemini unavailable', () => {
     saveConversationTurn('chat1', 'I prefer TypeScript over JavaScript always', 'Noted.');
+    expect(mockRunLearningPipeline).toHaveBeenCalledWith(
+      'chat1',
+      'I prefer TypeScript over JavaScript always',
+      'Noted.',
+    );
+    // Fallback regex path saves semantic
     expect(mockSaveMemory).toHaveBeenCalledWith(
       'chat1',
       'I prefer TypeScript over JavaScript always',
@@ -169,25 +201,7 @@ describe('saveConversationTurn', () => {
     );
   });
 
-  it('saves semantic memory for messages containing "remember"', () => {
-    saveConversationTurn('chat1', 'Please remember that I like dark mode', 'Sure thing.');
-    expect(mockSaveMemory).toHaveBeenCalledWith(
-      'chat1',
-      'Please remember that I like dark mode',
-      'semantic',
-    );
-  });
-
-  it('saves semantic memory for messages containing "always"', () => {
-    saveConversationTurn('chat1', 'I always use vim for editing', 'Got it.');
-    expect(mockSaveMemory).toHaveBeenCalledWith(
-      'chat1',
-      'I always use vim for editing',
-      'semantic',
-    );
-  });
-
-  it('saves episodic memory for regular messages', () => {
+  it('saves episodic memory for regular messages when Gemini unavailable', () => {
     saveConversationTurn('chat1', 'Can you help me refactor this code please?', 'Sure.');
     expect(mockSaveMemory).toHaveBeenCalledWith(
       'chat1',
@@ -196,9 +210,17 @@ describe('saveConversationTurn', () => {
     );
   });
 
+  it('does NOT save via regex when Gemini IS available (learning pipeline handles it)', () => {
+    mockIsGeminiAvailable.mockReturnValue(true);
+    saveConversationTurn('chat1', 'I prefer TypeScript over JavaScript always', 'Noted.');
+    expect(mockRunLearningPipeline).toHaveBeenCalled();
+    expect(mockSaveMemory).not.toHaveBeenCalled();
+  });
+
   it('does NOT save very short messages (<=20 chars)', () => {
     saveConversationTurn('chat1', 'short msg', 'ok');
     expect(mockSaveMemory).not.toHaveBeenCalled();
+    expect(mockRunLearningPipeline).not.toHaveBeenCalled();
   });
 
   it('does NOT save messages exactly 20 chars', () => {

@@ -1,0 +1,4 @@
+name: CSO
+description: Chief Security Officer -- cybersecurity scanning, threat detection, incident response, runtime monitoring
+telegram_bot_token_env: CSO_BOT_TOKEN
+model: claude-sonnet-4-6

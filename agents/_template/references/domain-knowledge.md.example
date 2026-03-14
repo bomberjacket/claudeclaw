@@ -1,0 +1,63 @@
+# [Domain Area] Knowledge Base
+
+## Core Frameworks
+
+### [Framework 1 Name]
+
+**What it is:** [1-2 sentence description]
+
+**When to use:** [Specific trigger conditions -- what kind of task/question activates this]
+
+**Key concepts:**
+- **[Concept A]:** [Explanation]
+- **[Concept B]:** [Explanation]
+- **[Concept C]:** [Explanation]
+
+**How to apply:**
+1. [Concrete step with specifics, not "analyze the situation"]
+2. [Next step]
+3. [Next step]
+
+**Watch out for:** [Common mistake when applying this framework]
+
+---
+
+### [Framework 2 Name]
+
+**What it is:** [1-2 sentence description]
+
+**When to use:** [Trigger conditions]
+
+**Key principles:**
+- [Principle with explanation]
+- [Principle with explanation]
+
+**How to apply:**
+1. [Step]
+2. [Step]
+
+---
+
+## Decision Trees
+
+### [Common Decision Type]
+
+```
+Is [condition A]?
+├── Yes → [Action/Framework to use]
+└── No
+    ├── Is [condition B]?
+    │   ├── Yes → [Action]
+    │   └── No → [Action]
+    └── Default → [Fallback action]
+```
+
+## Checklists
+
+### [Repeatable Task Checklist]
+
+- [ ] [Step 1]
+- [ ] [Step 2]
+- [ ] [Step 3]
+- [ ] [Validation: check that X is true before moving on]
+- [ ] [Step 4]

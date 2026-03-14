@@ -10,15 +10,17 @@ import {
   DASHBOARD_TOKEN,
   DASHBOARD_URL,
   MAX_MESSAGE_LENGTH,
+  SAFETY_ENABLED,
   activeBotToken,
   agentDefaultModel,
   agentSystemPrompt,
   TYPING_REFRESH_MS,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getSession, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getSession, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, logToHiveMind } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn } from './memory.js';
+import { sanitizeInbound, sanitizeOutbound } from './safety.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 
 // ── Context window tracking ──────────────────────────────────────────
@@ -313,6 +315,15 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   // Emit user message to SSE clients
   emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: message, source: 'telegram' });
 
+  // Safety: inbound gate — detect injection & policy violations
+  if (SAFETY_ENABLED) {
+    const { text: safeMessage, warnings } = sanitizeInbound(message);
+    if (warnings.length > 0) {
+      logger.warn({ warnings }, 'Safety: inbound warnings');
+    }
+    message = safeMessage;
+  }
+
   // Build memory context and prepend to message
   const memCtx = await buildMemoryContext(chatIdStr, message);
   const parts: string[] = [];
@@ -377,17 +388,34 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     const rawResponse = result.text?.trim() || 'Done.';
 
+    // Safety: outbound gate — redact leaked secrets
+    let finalResponse = rawResponse;
+    if (SAFETY_ENABLED) {
+      const { text: safeResponse, redacted } = sanitizeOutbound(rawResponse);
+      if (redacted.length > 0) {
+        logger.warn({ redacted: redacted.map((r) => r.name) }, 'Safety: secrets redacted from response');
+      }
+      finalResponse = safeResponse;
+    }
+
     // Extract file markers before any formatting
-    const { text: responseText, files: fileMarkers } = extractFileMarkers(rawResponse);
+    const { text: responseText, files: fileMarkers } = extractFileMarkers(finalResponse);
 
     // Save conversation turn to memory (including full log).
     // Skip logging for synthetic messages like /respin to avoid self-referential growth.
     if (!skipLog) {
-      saveConversationTurn(chatIdStr, message, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
+      saveConversationTurn(chatIdStr, message, finalResponse, result.newSessionId ?? sessionId, AGENT_ID);
+    }
+
+    // Log to hive mind for team awareness (agents only, skip main)
+    if (AGENT_ID !== 'main' && !skipLog) {
+      const summarySnippet = finalResponse.slice(0, 150).replace(/\n/g, ' ');
+      logToHiveMind(AGENT_ID, chatIdStr, 'responded', summarySnippet);
+      emitChatEvent({ type: 'hive_mind', chatId: chatIdStr, agentId: AGENT_ID, content: summarySnippet, description: 'responded' });
     }
 
     // Emit assistant response to SSE clients
-    emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: rawResponse, source: 'telegram' });
+    emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: finalResponse, source: 'telegram' });
 
     // Send any attached files first
     for (const file of fileMarkers) {
@@ -412,12 +440,15 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // OR if they've toggled /voice on for text messages.
     const caps = voiceCapabilities();
     const shouldSpeakBack = caps.tts && (forceVoiceReply || voiceEnabledChats.has(chatIdStr));
+    logger.info({ forceVoiceReply, voiceMode: voiceEnabledChats.has(chatIdStr), ttsCap: caps.tts, shouldSpeakBack }, 'Voice reply decision');
 
     // Send text response (if there's any left after stripping markers)
     if (responseText) {
       if (shouldSpeakBack) {
         try {
+          logger.info({ textLen: responseText.length }, 'Synthesizing TTS...');
           const audioBuffer = await synthesizeSpeech(responseText);
+          logger.info({ audioBytes: audioBuffer.length }, 'TTS complete, sending voice');
           await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.ogg'));
         } catch (ttsErr) {
           logger.error({ err: ttsErr }, 'TTS failed, falling back to text');
@@ -936,8 +967,11 @@ export function createBot(): Bot {
       const localPath = await downloadTelegramFile(activeBotToken, fileId, UPLOADS_DIR);
       const transcribed = await transcribeAudio(localPath);
       clearInterval(typingInterval);
-      // Only reply with voice if explicitly requested — otherwise execute and respond in text
-      const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice)\b/i.test(transcribed);
+      // Reply with voice if explicitly requested OR if /voice mode is on.
+      // Broad matching: catches "respond with voice", "say hi back in a voice",
+      // "voice back", "talk to me", "speak back", "use voice", "voice mode", etc.
+      const wantsVoiceBack = /\b(respond|reply|answer|talk back|speak back|say .{0,20}back)\b.{0,30}\bvoice\b|\bvoice\b.{0,15}\b(back|reply|response|message|note|mode)\b|\b(in|with|via) (a )?voice\b|\bsend .{0,15}voice\b|\btalk to me\b|\bspeak (back|to me)\b|\bsay it\b|\buse voice\b/i.test(transcribed);
+      logger.info({ transcribed: transcribed.slice(0, 80), wantsVoiceBack }, 'Voice message transcribed');
       handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, wantsVoiceBack).catch((err) => logger.error({ err }, 'Unhandled voice message error'));
     } catch (err) {
       clearInterval(typingInterval);

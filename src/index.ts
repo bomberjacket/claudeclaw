@@ -19,6 +19,29 @@ const AGENT_ID = agentFlagIndex !== -1 ? process.argv[agentFlagIndex + 1] : 'mai
 if (AGENT_ID !== 'main') {
   const agentConfig = loadAgentConfig(AGENT_ID);
   const agentDir = path.join(PROJECT_ROOT, 'agents', AGENT_ID);
+
+  // Per-agent skill scoping: create .skills/ with symlinks to only the allowed skills
+  if (agentConfig.skills && agentConfig.skills.length > 0) {
+    const globalSkillsDir = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+    const scopedSkillsDir = path.join(agentDir, '.skills');
+
+    // Clean and recreate
+    fs.rmSync(scopedSkillsDir, { recursive: true, force: true });
+    fs.mkdirSync(scopedSkillsDir, { recursive: true });
+
+    for (const skillName of agentConfig.skills) {
+      const src = path.join(globalSkillsDir, skillName);
+      const dest = path.join(scopedSkillsDir, skillName);
+      if (fs.existsSync(src)) {
+        // On Windows, use junction for directories (no admin needed)
+        fs.symlinkSync(src, dest, 'junction');
+      } else {
+        logger.warn({ skill: skillName, agentId: AGENT_ID }, 'Skill not found in global skills');
+      }
+    }
+    logger.info({ agentId: AGENT_ID, skills: agentConfig.skills }, 'Scoped skills created');
+  }
+
   const claudeMdPath = path.join(agentDir, 'CLAUDE.md');
   let systemPrompt: string | undefined;
   try {

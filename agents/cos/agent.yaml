@@ -1,0 +1,7 @@
+name: Cos
+description: Workflow orchestration -- runs multi-step workflows with supervised-to-autonomous graduation
+telegram_bot_token_env: COS_BOT_TOKEN
+model: claude-opus-4-6
+
+skills:
+  - advisory-board

@@ -24,6 +24,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
   .gauge-bg { fill: #2a2a2a; }
   .refresh-spin { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
   .device-badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
   .device-mobile { background: #1e3a5f; color: #60a5fa; }
   .device-desktop { background: #3b1f5e; color: #c084fc; }
@@ -108,16 +109,26 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <div id="bot-info" class="flex items-center gap-3 mb-4 text-xs text-gray-500"></div>
 
 <!-- Agent Status Cards -->
-<div id="agents-section" class="mb-5" style="display:none">
+<div id="agents-section" class="mb-5">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Agents</h2>
-  <div id="agents-container" class="flex flex-wrap gap-3"></div>
+  <div id="agents-container" class="flex flex-wrap gap-3">
+    <div class="text-gray-500 text-sm">Loading...</div>
+  </div>
+</div>
+
+<!-- Workflow Runs -->
+<div id="workflows-section" class="mb-5">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Workflows <span id="workflows-count" class="text-xs text-gray-600"></span></h2>
+  <div id="workflows-container">
+    <div class="text-gray-500 text-sm">No workflows</div>
+  </div>
 </div>
 
 <!-- Hive Mind Feed -->
-<div id="hive-section" class="mb-5" style="display:none">
-  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Hive Mind</h2>
-  <div id="hive-container" class="card" style="max-height:240px;overflow-y:auto">
-    <div class="text-gray-500 text-sm">Loading...</div>
+<div id="hive-section" class="mb-5">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Hive Mind <span id="hive-count" class="text-xs text-gray-600"></span></h2>
+  <div id="hive-container" class="card" style="max-height:300px;overflow-y:auto">
+    <div class="text-gray-500 text-sm">No activity yet</div>
   </div>
 </div>
 
@@ -590,16 +601,87 @@ document.addEventListener('click', function(e) {
   document.querySelectorAll('.info-tip.active').forEach(t => t.classList.remove('active'));
 }, true);
 
+// ── Workflows ────────────────────────────────────────────────────────
+async function loadWorkflows() {
+  try {
+    const data = await api('/api/workflows');
+    const container = document.getElementById('workflows-container');
+    const countEl = document.getElementById('workflows-count');
+    const active = data.active || [];
+    const recent = data.recent || [];
+    if (active.length === 0 && recent.length === 0) {
+      container.innerHTML = '<div class="text-gray-500 text-sm">No workflows</div>';
+      if (countEl) countEl.textContent = '';
+      return;
+    }
+    if (countEl) countEl.textContent = active.length > 0 ? '(' + active.length + ' active)' : '';
+    let html = '';
+    // Active runs first
+    active.forEach(function(w) {
+      const pct = w.total_steps > 0 ? Math.round((w.current_step / w.total_steps) * 100) : 0;
+      const graduated = w.is_graduated ? 'graduated' : 'supervised';
+      const graduatedColor = w.is_graduated ? '#064e3b' : '#422006';
+      const graduatedText = w.is_graduated ? '#6ee7b7' : '#fbbf24';
+      const statusColor = w.status === 'failed' ? '#f87171' : w.status === 'paused_for_approval' ? '#fbbf24' : '#6ee7b7';
+      const cadence = w.notification_cadence ? ' | ' + w.notification_cadence : '';
+      html += '<div class="card" style="border-left:3px solid ' + statusColor + '">' +
+        '<div class="flex items-center justify-between mb-2">' +
+          '<div class="font-bold text-white text-sm">' + escapeHtml(w.workflow_name) + '</div>' +
+          '<div class="flex items-center gap-2">' +
+            '<span class="pill" style="background:' + graduatedColor + ';color:' + graduatedText + '">' + graduated + '</span>' +
+            '<span class="text-xs" style="color:' + statusColor + '">' + w.status.replace(/_/g, ' ') + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="flex items-center gap-3">' +
+          '<div style="flex:1;height:6px;background:#2a2a2a;border-radius:3px;overflow:hidden">' +
+            '<div style="width:' + pct + '%;height:100%;background:' + statusColor + ';border-radius:3px;transition:width 0.3s"></div>' +
+          '</div>' +
+          '<span class="text-xs text-gray-400">Step ' + w.current_step + '/' + w.total_steps + '</span>' +
+        '</div>' +
+        (cadence ? '<div class="text-xs text-gray-500 mt-1">Cadence: ' + w.notification_cadence + '</div>' : '') +
+      '</div>';
+    });
+    // Recent completed/failed
+    const nonActive = recent.filter(function(w) { return w.status !== 'running' && w.status !== 'paused_for_approval' && w.status !== 'pending'; }).slice(0, 5);
+    if (nonActive.length > 0) {
+      html += '<div class="text-xs text-gray-500 mt-2 mb-1">Recent</div>';
+      nonActive.forEach(function(w) {
+        const statusIcon = w.status === 'completed' ? '\\u2705' : w.status === 'failed' ? '\\u274C' : '\\u23F8';
+        const time = w.completed_at ? new Date(w.completed_at * 1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '-';
+        html += '<div class="flex items-center gap-2 text-xs text-gray-400 py-1">' +
+          '<span>' + statusIcon + '</span>' +
+          '<span class="text-white">' + escapeHtml(w.workflow_name) + '</span>' +
+          '<span>Step ' + w.current_step + '/' + w.total_steps + '</span>' +
+          '<span class="text-gray-600">' + time + '</span>' +
+          (w.is_graduated ? '<span class="pill" style="background:#064e3b;color:#6ee7b7;font-size:10px">graduated</span>' : '') +
+        '</div>';
+      });
+    }
+    container.innerHTML = html || '<div class="text-gray-500 text-sm">No workflows</div>';
+  } catch {}
+}
+
 // ── Agent & Hive Mind ────────────────────────────────────────────────
-const AGENT_COLORS = { main: '#4f46e5', comms: '#0ea5e9', content: '#f59e0b', ops: '#10b981', research: '#8b5cf6' };
+const AGENT_PALETTE = ['#4f46e5', '#0ea5e9', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16'];
+const AGENT_COLORS_STATIC = { main: '#4f46e5' };
+const AGENT_COLORS_DYNAMIC = {};
+let _colorIdx = 0;
+function agentColor(id) {
+  if (AGENT_COLORS_STATIC[id]) return AGENT_COLORS_STATIC[id];
+  if (!AGENT_COLORS_DYNAMIC[id]) { AGENT_COLORS_DYNAMIC[id] = AGENT_PALETTE[(_colorIdx++) % AGENT_PALETTE.length]; }
+  return AGENT_COLORS_DYNAMIC[id];
+}
+// Backward compat alias
+const AGENT_COLORS = new Proxy({}, { get: (_, key) => agentColor(key) });
 
 async function loadAgents() {
   try {
     const data = await api('/api/agents');
-    const section = document.getElementById('agents-section');
     const container = document.getElementById('agents-container');
-    if (!data.agents || data.agents.length <= 1) { section.style.display = 'none'; return; }
-    section.style.display = '';
+    if (!data.agents || data.agents.length === 0) {
+      container.innerHTML = '<div class="text-gray-500 text-sm">No agents configured</div>';
+      return;
+    }
     container.innerHTML = data.agents.map(a => {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
@@ -659,30 +741,67 @@ async function toggleAgentDetail(agentId) {
   } catch { el.innerHTML = '<div class="text-xs text-red-400">Failed to load</div>'; }
 }
 
+function renderHiveEntry(e) {
+  const time = e.created_at > 1e12
+    ? new Date(e.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+    : new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  const color = AGENT_COLORS[e.agent_id || e.agentId] || '#6b7280';
+  const agentName = e.agent_id || e.agentId || '?';
+  const action = e.action || e.description || 'activity';
+  const summary = e.summary || e.content || '';
+  let badge = '';
+  if (action === 'handoff') {
+    const target = e.target_agent || '';
+    const status = e.status || 'pending';
+    const statusColor = status === 'pending' ? '#f59e0b' : status === 'accepted' ? '#0ea5e9' : status === 'completed' ? '#10b981' : '#6b7280';
+    badge = ' <span style="color:' + statusColor + ';font-weight:600">[' + status + ']</span>' + (target ? ' \u2192 ' + target : '');
+  }
+  return '<div class="hive-entry" style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid #222">' +
+    '<span class="text-xs text-gray-500" style="min-width:42px">' + time + '</span>' +
+    '<span class="text-xs font-semibold" style="color:' + color + ';min-width:60px">' + agentName + '</span>' +
+    '<span class="text-xs text-gray-400" style="min-width:80px">' + action + badge + '</span>' +
+    '<span class="text-xs text-gray-300" style="flex:1">' + escapeHtml(summary) + '</span>' +
+  '</div>';
+}
+
+function prependHiveEntry(ev) {
+  const container = document.getElementById('hive-container');
+  if (!container) return;
+  // Remove "No activity" placeholder if present
+  const placeholder = container.querySelector('.text-gray-500.text-sm');
+  if (placeholder && placeholder.textContent.includes('No activity')) placeholder.remove();
+  // Prepend new entry
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = renderHiveEntry(ev);
+  const entry = wrapper.firstChild;
+  entry.style.animation = 'fadeIn 0.3s ease-in';
+  container.prepend(entry);
+  // Cap at 30 entries
+  const entries = container.querySelectorAll('.hive-entry');
+  if (entries.length > 30) entries[entries.length - 1].remove();
+  // Update count
+  const countEl = document.getElementById('hive-count');
+  if (countEl) countEl.textContent = '(' + entries.length + ')';
+}
+
 async function loadHiveMind() {
   try {
-    const data = await api('/api/hive-mind?limit=15');
-    const section = document.getElementById('hive-section');
+    const data = await api('/api/hive-mind?limit=25');
     const container = document.getElementById('hive-container');
-    if (!data.entries || data.entries.length === 0) { section.style.display = 'none'; return; }
-    section.style.display = '';
-    container.innerHTML = data.entries.map(e => {
-      const time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-      const color = AGENT_COLORS[e.agent_id] || '#6b7280';
-      return '<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid #222">' +
-        '<span class="text-xs text-gray-500" style="min-width:42px">' + time + '</span>' +
-        '<span class="text-xs font-semibold" style="color:' + color + ';min-width:60px">' + e.agent_id + '</span>' +
-        '<span class="text-xs text-gray-400" style="min-width:80px">' + e.action + '</span>' +
-        '<span class="text-xs text-gray-300" style="flex:1">' + e.summary + '</span>' +
-      '</div>';
-    }).join('');
+    if (!data.entries || data.entries.length === 0) {
+      container.innerHTML = '<div class="text-gray-500 text-sm">No activity yet</div>';
+      return;
+    }
+    const countEl = document.getElementById('hive-count');
+    if (countEl) countEl.textContent = '(' + data.entries.length + ')';
+    container.innerHTML = data.entries.map(e => renderHiveEntry(e)).join('');
   } catch {}
 }
 
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadWorkflows(), loadHiveMind()]);
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
@@ -788,6 +907,11 @@ function connectChatSSE() {
       appendChatBubble('assistant', ev.content || 'Error', 'system', true);
     } catch {}
     hideTyping();
+  });
+
+  chatSSE.addEventListener('hive_mind', function(e) {
+    const ev = JSON.parse(e.data);
+    prependHiveEntry(ev);
   });
 
   chatSSE.addEventListener('ping', function() { /* keepalive */ });
