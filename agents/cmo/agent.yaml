@@ -1,0 +1,7 @@
+name: CMO
+description: Chief Marketing Officer -- marketing strategy, content direction, audience building, positioning, campaign oversight, and sub-agent coordination
+telegram_bot_token_env: CMO_BOT_TOKEN
+model: claude-sonnet-4-6
+
+skills:
+  - advisory-board

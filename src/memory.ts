@@ -74,7 +74,9 @@ function buildTeamContext(): string {
   if (handoffs.length > 0) {
     lines.push('[Pending handoffs for you]');
     for (const h of handoffs) {
-      lines.push(`- FROM ${h.agent_id}: ${h.summary}${h.artifacts ? ` [artifacts: ${h.artifacts}]` : ''}`);
+      const safeSummary = SAFETY_ENABLED ? sanitizeMemoryContent(h.summary) : h.summary;
+      const safeArtifacts = h.artifacts && SAFETY_ENABLED ? sanitizeMemoryContent(h.artifacts) : h.artifacts;
+      lines.push(`- FROM ${h.agent_id}: ${safeSummary}${safeArtifacts ? ` [artifacts: ${safeArtifacts}]` : ''}`);
       updateHandoffStatus(h.id, 'accepted');
     }
     lines.push('[End handoffs]');
@@ -87,7 +89,8 @@ function buildTeamContext(): string {
     for (const a of activity) {
       const age = Math.floor((Date.now() / 1000 - a.created_at) / 60);
       const timeLabel = age < 60 ? `${age}m ago` : `${Math.floor(age / 60)}h ago`;
-      lines.push(`- ${a.agent_id} (${timeLabel}): ${a.action} -- ${a.summary}`);
+      const safeSummary = SAFETY_ENABLED ? sanitizeMemoryContent(a.summary) : a.summary;
+      lines.push(`- ${a.agent_id} (${timeLabel}): ${a.action} -- ${safeSummary}`);
     }
     lines.push('[End team activity]');
   }

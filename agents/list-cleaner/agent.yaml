@@ -1,0 +1,7 @@
+name: List Cleaner
+description: List hygiene -- dedup, enrichment, validation, CRM export
+telegram_bot_token_env: LIST_CLEANER_BOT_TOKEN
+model: claude-sonnet-4-6
+
+skills:
+  - list-cleaner

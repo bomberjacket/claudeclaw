@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'claudeclaw',
+      name: 'claudeclaw-pa',
       script: 'dist/index.js',
       cwd: __dirname,
       restart_delay: 5000,
@@ -19,6 +19,22 @@ module.exports = {
       name: 'claudeclaw-cso',
       script: 'dist/index.js',
       args: '--agent cso',
+      cwd: __dirname,
+      restart_delay: 5000,
+      max_restarts: 10,
+    },
+    {
+      name: 'claudeclaw-cmo',
+      script: 'dist/index.js',
+      args: '--agent cmo',
+      cwd: __dirname,
+      restart_delay: 5000,
+      max_restarts: 10,
+    },
+    {
+      name: 'claudeclaw-list-cleaner',
+      script: 'dist/index.js',
+      args: '--agent list-cleaner',
       cwd: __dirname,
       restart_delay: 5000,
       max_restarts: 10,
